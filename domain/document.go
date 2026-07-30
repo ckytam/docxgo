@@ -72,6 +72,23 @@ type Document interface {
 	// Returns an error if the operation fails.
 	AddParagraph() (Paragraph, error)
 
+	// InsertParagraph inserts a new, empty paragraph at the specified index and
+	// returns it. The index is a position among the document's paragraphs:
+	//   - 0 inserts before the first paragraph (becoming the new first one),
+	//   - len(Paragraphs()) appends after the last paragraph.
+	// The new paragraph is also inserted at the corresponding position among the
+	// document's top-level blocks, so it keeps its place relative to tables and
+	// section breaks.
+	//
+	// The index must be in [0, len(Paragraphs())]; otherwise an InvalidArgument
+	// error is returned.
+	InsertParagraph(index int) (Paragraph, error)
+
+	// DeleteParagraph removes the paragraph at the specified index (0-based)
+	// among the document's paragraphs and returns an error if the index is out
+	// of range. The corresponding top-level block is removed as well.
+	DeleteParagraph(index int) error
+
 	// AddTable adds a new table with the specified dimensions.
 	// Returns an error if rows or cols are invalid.
 	AddTable(rows, cols int) (Table, error)
@@ -154,6 +171,21 @@ type Document interface {
 	// Language returns a copy of the document's default proofing language, or
 	// nil if unset. Mutating the returned value has no effect on the document.
 	Language() *Language
+
+	// ReplaceImageData swaps the binary payload of an image already embedded
+	// in this document while keeping its media path, relationship ID,
+	// displayed size, and position untouched, so the surrounding layout is
+	// preserved. The new data is rendered at the placeholder's size regardless
+	// of the new image's own dimensions.
+	//
+	// The new data must be PNG, JPEG, or GIF. The media part keeps its original
+	// file name (and therefore its extension); supplying data in the same
+	// format as the placeholder image is recommended for maximum
+	// compatibility, since mismatched formats may not render in all viewers.
+	//
+	// If several images in the document share the same media file, replacing
+	// one changes what all of them display.
+	ReplaceImageData(img Image, data []byte) error
 }
 
 // Metadata contains document properties like title, author, etc.

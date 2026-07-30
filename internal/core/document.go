@@ -130,6 +130,74 @@ func (d *document) AddParagraph() (domain.Paragraph, error) {
 	return para, nil
 }
 
+// InsertParagraph inserts a new, empty paragraph at the given paragraph index.
+// See domain.Document.InsertParagraph for the index semantics.
+func (d *document) InsertParagraph(index int) (domain.Paragraph, error) {
+	if _, err := d.ensureActiveSection(); err != nil {
+		return nil, err
+	}
+	if index < 0 || index > len(d.paragraphs) {
+		return nil, errors.InvalidArgument("Document.InsertParagraph", "index", index,
+			"index must be between 0 and len(Paragraphs())")
+	}
+
+	id := d.idGen.NextParagraphID()
+	para := NewParagraph(id, d.idGen, d.relManager, d.mediaManager)
+
+	// Locate the block index at which the new paragraph block must be inserted
+	// so that it becomes the index-th paragraph.
+	blockIdx := d.blockIndexForParagraphIndex(index)
+
+	d.paragraphs = append(d.paragraphs, nil)
+	copy(d.paragraphs[index+1:], d.paragraphs[index:])
+	d.paragraphs[index] = para
+
+	d.blocks = append(d.blocks, domain.Block{})
+	copy(d.blocks[blockIdx+1:], d.blocks[blockIdx:])
+	d.blocks[blockIdx] = domain.Block{Paragraph: para}
+
+	return para, nil
+}
+
+// blockIndexForParagraphIndex returns the index in the blocks slice where a
+// freshly created paragraph that should become the index-th paragraph must be
+// inserted. When index >= len(paragraphs) the block is appended at the end.
+func (d *document) blockIndexForParagraphIndex(index int) int {
+	if index >= len(d.paragraphs) {
+		return len(d.blocks)
+	}
+	count := 0
+	for bi, b := range d.blocks {
+		if b.Paragraph != nil {
+			if count == index {
+				return bi
+			}
+			count++
+		}
+	}
+	return len(d.blocks)
+}
+
+// DeleteParagraph removes the paragraph at the given paragraph index.
+// See domain.Document.DeleteParagraph for details.
+func (d *document) DeleteParagraph(index int) error {
+	if index < 0 || index >= len(d.paragraphs) {
+		return errors.InvalidArgument("Document.DeleteParagraph", "index", index,
+			"index must be between 0 and len(Paragraphs())-1")
+	}
+	para := d.paragraphs[index]
+
+	for bi, b := range d.blocks {
+		if b.Paragraph == para {
+			d.blocks = append(d.blocks[:bi], d.blocks[bi+1:]...)
+			break
+		}
+	}
+
+	d.paragraphs = append(d.paragraphs[:index], d.paragraphs[index+1:]...)
+	return nil
+}
+
 // AddTable adds a new table with the specified dimensions.
 func (d *document) AddTable(rows, cols int) (domain.Table, error) {
 	if _, err := d.ensureActiveSection(); err != nil {
@@ -810,6 +878,54 @@ func (d *document) HasPreservedParts() bool {
 // file.
 func (d *document) HasPreservedHeadersOrFooters() bool {
 	return d != nil && (len(d.preservedHeaders) > 0 || len(d.preservedFooters) > 0)
+}
+
+// ReplaceImageData swaps the binary payload of an image embedded in this
+// document while keeping its media path, relationship ID, displayed size,
+// and position untouched, so the surrounding layout is preserved.
+//
+// The new data must be PNG, JPEG, or GIF. The media part keeps its original
+// file name (and therefore its extension); when the new data uses a
+// different format than the original, Word still renders it in practice,
+// but supplying data in the same format as the original image is
+// recommended for maximum compatibility.
+//
+// Note: if multiple images in the document share the same media file, all
+// of them will display the new data.
+func (d *document) ReplaceImageData(img domain.Image, data []byte) error {
+	if d == nil || d.mediaManager == nil {
+		return errors.InvalidState("Document.ReplaceImageData", "document is not initialized")
+	}
+	if img == nil {
+		return errors.InvalidArgument("Document.ReplaceImageData", "img", img, "image cannot be nil")
+	}
+	if len(data) == 0 {
+		return errors.InvalidArgument("Document.ReplaceImageData", "data", data, "image data cannot be empty")
+	}
+
+	naturalSize, format, err := decodeImageInfo(data)
+	if err != nil {
+		return errors.Wrap(err, "Document.ReplaceImageData")
+	}
+
+	target := img.Target()
+	if target == "" {
+		return errors.InvalidState("Document.ReplaceImageData", "image has no media target")
+	}
+	mediaPath := target
+	if !strings.HasPrefix(mediaPath, "word/") {
+		mediaPath = "word/" + mediaPath
+	}
+
+	if err := d.mediaManager.UpdateDataByPath(mediaPath, data, ""); err != nil {
+		return errors.Wrap(err, "Document.ReplaceImageData")
+	}
+
+	if coreImg, ok := img.(*docxImage); ok {
+		coreImg.replaceData(data, naturalSize, format)
+	}
+
+	return nil
 }
 
 func normalizeNumberingTarget(target string) string {

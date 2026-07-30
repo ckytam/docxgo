@@ -206,6 +206,20 @@ func (img *docxImage) Data() []byte {
 	return data
 }
 
+// replaceData swaps the raw image payload while keeping the displayed size
+// (img.size) untouched so the surrounding layout is preserved. The original
+// (natural) size is updated to the new image's dimensions so subsequent
+// SetSize calls compute aspect ratios against the new data.
+func (img *docxImage) replaceData(data []byte, naturalSize domain.ImageSize, format domain.ImageFormat) {
+	copyData := make([]byte, len(data))
+	copy(copyData, data)
+	img.data = copyData
+	img.originalSize = naturalSize
+	if format != "" {
+		img.format = format
+	}
+}
+
 // RelationshipID returns the relationship ID for this image.
 func (img *docxImage) RelationshipID() string {
 	return img.relationshipID
@@ -299,6 +313,18 @@ func formatFromContentType(contentType string) domain.ImageFormat {
 }
 
 // getImageDimensions reads image dimensions from image data.
+// decodeImageInfo decodes the natural size and normalized format of raw
+// image data. Only formats decodable by the registered standard-library
+// decoders (PNG, JPEG, GIF) are supported.
+func decodeImageInfo(data []byte) (domain.ImageSize, domain.ImageFormat, error) {
+	cfg, formatName, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return domain.ImageSize{}, "", errors.Wrap(err, "decodeImageInfo")
+	}
+
+	return domain.NewImageSize(cfg.Width, cfg.Height), normalizeImageFormat(domain.ImageFormat(formatName)), nil
+}
+
 func getImageDimensions(data []byte) (domain.ImageSize, error) {
 	img, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {

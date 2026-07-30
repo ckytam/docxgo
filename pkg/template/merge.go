@@ -117,45 +117,52 @@ func ValidateTemplate(doc domain.Document, data MergeData, opts ...MergeOptions)
 // replaceParagraph replaces all placeholders in a single paragraph.
 // Returns the placeholder keys for which no data was found, and an error if a
 // run's text could not be written.
+//
+// Matching runs over the paragraph's concatenated text (after run consolidation)
+// rather than one run at a time, so a placeholder that Word has fragmented
+// across several runs — which happens whenever the delimiters or the key are
+// typed or formatted separately — is still matched and replaced. A match that
+// cannot be rewritten safely (it spans a field, a break, or an image) is left
+// untouched; see replaceSpan for those rules.
 func replaceParagraph(para domain.Paragraph, data MergeData, pattern *regexp.Regexp, opt MergeOptions) ([]string, error) {
 	var missing []string
-	runs := para.Runs()
 
-	for i, run := range runs {
-		text := run.Text()
-		if !pattern.MatchString(text) {
+	if err := ConsolidateRuns(para); err != nil {
+		return missing, err
+	}
+
+	cursor := 0
+	for {
+		spans, full := paragraphSpans(para)
+		if cursor >= len(full) {
+			break
+		}
+		loc := pattern.FindStringIndex(full[cursor:])
+		if loc == nil {
+			break
+		}
+		start := cursor + loc[0]
+		end := cursor + loc[1]
+		key := extractKey(full[start:end], opt)
+
+		val, ok := data[key]
+		if !ok {
+			missing = append(missing, key)
+			cursor = end
 			continue
 		}
 
-		newText := pattern.ReplaceAllStringFunc(text, func(match string) string {
-			key := extractKey(match, opt)
-			if val, ok := data[key]; ok {
-				return val
-			}
-			missing = append(missing, key)
-			return match // leave unreplaced
-		})
-
-		if newText != text {
-			if err := run.SetText(newText); err != nil {
-				return missing, fmt.Errorf("template: set run text: %w", err)
-			}
-			// Clear fields on this run if it has any.
-			if len(run.Fields()) > 0 {
-				run.ClearFields()
-			}
-			// Word MERGEFIELDs are read as two adjacent runs:
-			//   Run[i-1]: text="" + Field (fldChar begin/instrText/separate/end)
-			//   Run[i]:   text="«Placeholder»" (display text, no fields)
-			// The field lives in the preceding run while the replaceable text
-			// is in the current run. Clear the field from the preceding run so
-			// the serializer does not re-emit the original MERGEFIELD XML.
-			if i > 0 && len(runs[i-1].Fields()) > 0 && runs[i-1].Text() == "" {
-				runs[i-1].ClearFields()
-			}
+		okWrite, err := replaceSpan(spans, start, end, val)
+		if err != nil {
+			return missing, err
 		}
+		if !okWrite {
+			// Unsafe to rewrite (spanning a field/break/image); leave as-is.
+			cursor = end
+			continue
+		}
+		cursor = start + len(val)
 	}
-
 	return missing, nil
 }
 

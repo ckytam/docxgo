@@ -165,6 +165,36 @@ func (mm *MediaManager) GetByPath(path string) (*MediaFile, error) {
 	return nil, errors.NotFound("MediaManager.GetByPath", "media file")
 }
 
+// UpdateDataByPath replaces the binary payload of the media file stored at
+// path (e.g. "word/media/image1.png"), keeping its ID, name, and path so
+// existing relationships remain valid. If contentType is non-empty the
+// stored content type is updated as well.
+func (mm *MediaManager) UpdateDataByPath(path string, data []byte, contentType string) error {
+	if path == "" {
+		return errors.InvalidArgument("MediaManager.UpdateDataByPath", "path", path, "media path cannot be empty")
+	}
+	if len(data) == 0 {
+		return errors.InvalidArgument("MediaManager.UpdateDataByPath", "data", data, "media data cannot be empty")
+	}
+
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	for _, file := range mm.files {
+		if file.Path == path {
+			copyData := make([]byte, len(data))
+			copy(copyData, data)
+			file.Data = copyData
+			if contentType != "" {
+				file.ContentType = contentType
+			}
+			return nil
+		}
+	}
+
+	return errors.NotFound("MediaManager.UpdateDataByPath", "media file")
+}
+
 // All returns all media files.
 func (mm *MediaManager) All() []*MediaFile {
 	mm.mu.RLock()
