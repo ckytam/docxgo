@@ -16,7 +16,7 @@ Since v2.7.0 it also ships a JSON-RPC command-line interface and a Node.js wrapp
 
 - **Fluent builder** — chainable API for documents, paragraphs, runs, tables, sections
 - **Read & modify** existing `.docx` files with round-trip style preservation
-- **Templates / mail merge** — placeholder detection, data merge, batch generation, external Word templates (MERGEFIELD)
+- **Templates / mail merge** — placeholder detection, data merge, batch generation, external Word templates (MERGEFIELD), body-level `foreach` loops over multiple paragraphs, and image replacement by alt-text marker
 - **Themes** — 7 preset themes (Corporate, Startup, Modern, Fintech, Academic, TechPresentation, TechDarkMode) for coordinated colors, fonts, and spacing
 - **Rich content** — tables (merging, nesting, 8 styles), in-memory images (PNG, JPEG, GIF), fields (TOC, page numbers, hyperlinks), headers/footers, 40+ built-in styles
 - **Proofing language** — `WithLanguage` / `WithLanguageEx` for spell-check, grammar, hyphenation
@@ -108,6 +108,128 @@ if err := doc.SaveAs("modified.docx"); err != nil {
     log.Fatal(err)
 }
 ```
+
+---
+
+## Advanced Templates
+
+On top of scalar `{{key}}` replacement, docxgo's `pkg/template` engine supports
+repeating blocks of content and swapping placeholder images. All functions take a
+`domain.Document` opened with `docx.OpenDocument(...)`, modify it in place, and you
+then call `doc.SaveAs(...)`.
+
+```go
+import (
+    "log"
+
+    docx "github.com/mmonterroca/docxgo/v2"
+    "github.com/mmonterroca/docxgo/v2/pkg/template"
+)
+```
+
+### Body-level `foreach` loops (repeating multiple paragraphs)
+
+`MergeTemplateWithBodyLoops` repeats the whole block of **paragraphs** between a
+`{{#foreach name}}` and `{{/each}}` marker once per item, so a loop can span
+several paragraphs (not just a single table row). Inside the block, reference each
+item's fields as `{{name.Field}}`.
+
+In Word, write the template block as consecutive paragraphs:
+
+```
+{{#foreach plots}}
+Plot: {{plots.NAME}}    Yield: {{plots.OUTPUT_RATE}} t/ha    Area: {{plots.AREA}} ha
+{{/each}}
+```
+
+Then expand it in Go:
+
+```go
+doc, err := docx.OpenDocument("template.docx")
+if err != nil {
+    log.Fatal(err)
+}
+
+loops := map[string][]template.ForeachItem{
+    "plots": {
+        {"NAME": "Plot A", "OUTPUT_RATE": "76.3", "AREA": "12.5"},
+        {"NAME": "Plot B", "OUTPUT_RATE": "81.0", "AREA": "9.8"},
+        {"NAME": "Plot C", "OUTPUT_RATE": "68.4", "AREA": "14.1"},
+    },
+}
+
+// Scalar {{key}} placeholders are filled by the data map; loop fields by loops.
+if err := template.MergeTemplateWithBodyLoops(doc, template.MergeData{
+    "TITLE": "Field Report",
+}, loops); err != nil {
+    log.Fatal(err)
+}
+
+if err := doc.SaveAs("output.docx"); err != nil {
+    log.Fatal(err)
+}
+```
+
+Notes:
+- A loop with **no items** (or a missing/empty entry) removes its template block entirely — no stray markers or blank lines.
+- The opening and closing marker must each sit within a **single run**; do not partially format `{{#foreach plots}}` or `{{/each}}`.
+- For repeating **table rows** instead of paragraph blocks, use `template.MergeTemplateWithLoops` (same `loops` shape; the whole table row containing the markers is cloned per item).
+
+### Image replacement by alt-text marker
+
+`ReplaceImage` swaps the binary data of every image whose alt-text description
+contains a marker, keeping the image's size, position, and relationship intact —
+so the new picture renders at the placeholder's dimensions. Right-click the
+placeholder image in Word, choose **View Alt Text**, and put a marker in the
+description box:
+
+```
+{{IMAGE .PHOTO}}
+```
+
+Then replace it:
+
+```go
+doc, err := docx.OpenDocument("template.docx")
+if err != nil {
+    log.Fatal(err)
+}
+
+// From bytes:
+photo, err := os.ReadFile("alice.png")
+if err != nil {
+    log.Fatal(err)
+}
+res, err := template.ReplaceImage(doc, "{{IMAGE .PHOTO}}", photo)
+if err != nil {
+    log.Fatal(err)
+}
+log.Printf("replaced %d image(s), skipped %d", res.Replaced, res.Skipped)
+
+// Or directly from a file:
+// res, err := template.ReplaceImageFromFile(doc, "{{IMAGE .PHOTO}}", "alice.png")
+
+// Replace several markers at once (deterministic, sorted order):
+// res, err := template.ReplaceImages(doc, map[string][]byte{
+//     "{{IMAGE .PHOTO}}":     photo,
+//     "{{IMAGE .SIGNATURE}}": signature,
+// })
+
+if err := doc.SaveAs("output.docx"); err != nil {
+    log.Fatal(err)
+}
+```
+
+Notes:
+- Matching is **literal and case-sensitive**; the description only has to *contain* the marker, not equal it. The marker is stripped from the alt text after replacement, so the saved file does not ship the template tag.
+- Replacement images must be **PNG, JPEG, or GIF**. Supplying the same format as the placeholder is recommended, since the media part keeps its original file extension.
+- Matches inside preserved headers/footers of a round-tripped document are skipped and counted in `ReplaceImageResult.Skipped` (those parts are written verbatim).
+
+> **Cross-run placeholders:** scalar and loop placeholders no longer need to live
+> inside a single run. Word often splits a `{{KEY}}` across multiple runs with
+> different formatting (e.g. `{{PLOTS.` + `OUTPUT` + `RATE}}`); docxgo now matches
+> against the concatenated paragraph text, so such placeholders are filled
+> correctly.
 
 ---
 
